@@ -50,8 +50,7 @@ DEVICE = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 def custom_collate_fn(batch):
     images = []
     targets = []
-    # Nota: Moveremos la instanciación de transform dentro o usaremos la global, 
-    # pero para simplificar multiprocessing, es mejor instanciarla aquí o pasarla limpia.
+    # Usamos la transformación estándar de COCO
     transform = FasterRCNN_ResNet50_FPN_Weights.COCO_V1.transforms()
 
     for item in batch:
@@ -64,7 +63,7 @@ def custom_collate_fn(batch):
         
         for bbox_coco, category_id in zip(annotations['bbox'], annotations['category']):
             x_min, y_min, w, h = bbox_coco
-            # Corrección del bug de coordenadas (x_min + w, y_min + h)
+            # Corrección de coordenadas: [x_min, y_min, x_max, y_max]
             boxes.append([x_min, y_min, x_min + w, y_min + h])
             labels.append(category_id + 1)
         
@@ -124,7 +123,6 @@ if __name__ == '__main__':
     PATIENCE = 3     
     BEST_MODEL_PATH = "best_frcnn_model_practical.pth"
     
-    # IMPORTANTE: Definir DEVICE dentro del main también por seguridad o usar la global
     print(f"--- Iniciando Benchmark en {DEVICE} ---")
 
     # --- 3. CARGA DE DATASETS ---
@@ -152,7 +150,6 @@ if __name__ == '__main__':
     print(f"\nIniciando Entrenamiento de FRCNN ({EPOCHS} Épocas)...")
     start_train = time.time()
     
-    # Inicializar variable para scope
     total_epochs_run = 0
 
     for epoch in range(EPOCHS):
@@ -168,9 +165,12 @@ if __name__ == '__main__':
             losses.backward()
             optimizer.step()
 
-        # --- FASE DE VALIDACIÓN (EARLY STOPPING) ---
-        model.eval()
+        # --- FASE DE VALIDACIÓN (CORREGIDO) ---
+        # CORRECCIÓN: Faster R-CNN debe estar en modo train() para devolver pérdidas.
+        model.train() 
         val_loss_sum = 0
+        
+        # Usamos no_grad() para que, aunque esté en train(), no actualice gradientes
         with torch.no_grad():
             for images, targets in tqdm(val_dataloader, desc=f"Epoch {epoch+1}/{EPOCHS} VALID"):
                 loss_dict = model(images, targets) 
@@ -192,7 +192,9 @@ if __name__ == '__main__':
     training_time = end_train - start_train
     
     # --- 5. PRUEBA DE INFERENCIA Y CÁLCULO DE mAP ---
+    # Cargamos el mejor modelo guardado
     model.load_state_dict(torch.load(BEST_MODEL_PATH))
+    # Para inferencia real (mAP), sí usamos model.eval()
     model.eval()
 
     print("\n--- INICIANDO PRUEBA DE INFERENCIA Y CÁLCULO DE mAP ---")
