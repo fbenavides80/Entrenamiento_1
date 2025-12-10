@@ -2,7 +2,6 @@ import time
 import torch
 import torch.optim as optim
 import os
-# Importación crítica para solucionar el error de procesos
 import torch.multiprocessing as mp 
 from torchvision.models.detection import fasterrcnn_resnet50_fpn, FasterRCNN_ResNet50_FPN_Weights
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
@@ -114,7 +113,8 @@ if __name__ == '__main__':
 
     # 2. CONFIGURACIÓN
     NUM_CLASSES = 81 
-    BATCH_SIZE = 8   
+    # MODIFICACIÓN 1: Aumentar BATCH_SIZE a 64 para usar la VRAM de 80 GB
+    BATCH_SIZE = 64   
     EPOCHS = 10      
     PATIENCE = 3     
     BEST_MODEL_PATH = "best_frcnn_model_practical.pth"
@@ -122,18 +122,25 @@ if __name__ == '__main__':
     print(f"--- Iniciando Benchmark en {DEVICE} ---")
 
     # --- 3. CARGA DE DATASETS ---
-    print(f"Cargando dataset de ENTRENAMIENTO ('val' ~5K) y VALIDACIÓN ('train[:500]')...")
+    # MODIFICACIÓN 2: Usar cache_dir local para leer desde ~/coco_data
+    LOCAL_CACHE_DIR = "/data" 
     
-    train_dataset = load_dataset("detection-datasets/coco", split="val")
-    val_dataset = load_dataset("detection-datasets/coco", split="train[:500]")
+    print(f"Cargando dataset de ENTRENAMIENTO (COMPLETO) y VALIDACIÓN (split='val') desde cache local...")
+    
+    # MODIFICACIÓN 3: Cargar el split="train" COMPLETO
+    train_dataset = load_dataset("detection-datasets/coco", split="train", cache_dir=LOCAL_CACHE_DIR)
+    
+    # MODIFICACIÓN 4: Cargar el split="val" (oficial para validación)
+    val_dataset = load_dataset("detection-datasets/coco", split="val", cache_dir=LOCAL_CACHE_DIR)
 
-    print(f"Dataset de Entrenamiento: {len(train_dataset)} ejemplos | Dataset de Validación (ES): {len(val_dataset)} ejemplos")
+    print(f"Dataset de Entrenamiento: {len(train_dataset)} ejemplos | Dataset de Validación: {len(val_dataset)} ejemplos")
 
+    # Creamos los DataLoaders
     train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate_fn, num_workers=4)
     val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn, num_workers=4)
 
     # --- 4. MODELO Y ENTRENAMIENTO ---
-    model = fasterrcnn_resnet50_fpn(weights=FasterRCNN_ResNet50_FPN_Weights.COCO_V1)
+    model = fasterrcnn_resnet50_fpn(weights=FasterRCNN_ResNet50_FPN_V1.transforms(min_size=800), weights_backbone=FasterRCNN_ResNet50_FPN_Weights.COCO_V1.transforms(min_size=800))
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, NUM_CLASSES)
     model.to(DEVICE)
@@ -196,7 +203,6 @@ if __name__ == '__main__':
     inference_times = []
     MAX_TEST_BATCHES = 100 
     
-    # --- CORRECCIÓN AQUÍ: Eliminado 'num_classes' ---
     metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox").to(DEVICE)
 
     if DEVICE.type == 'cuda':
