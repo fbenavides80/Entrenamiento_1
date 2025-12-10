@@ -44,13 +44,11 @@ class EarlyStopping:
 # ==============================================================================
 # 1. FUNCIÓN DE COLLATE (DEBE ESTAR FUERA DEL MAIN)
 # ==============================================================================
-# Necesaria para que 'spawn' pueda serializarla y enviarla a los workers
 DEVICE = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
 def custom_collate_fn(batch):
     images = []
     targets = []
-    # Usamos la transformación estándar de COCO
     transform = FasterRCNN_ResNet50_FPN_Weights.COCO_V1.transforms()
 
     for item in batch:
@@ -63,7 +61,6 @@ def custom_collate_fn(batch):
         
         for bbox_coco, category_id in zip(annotations['bbox'], annotations['category']):
             x_min, y_min, w, h = bbox_coco
-            # Corrección de coordenadas: [x_min, y_min, x_max, y_max]
             boxes.append([x_min, y_min, x_min + w, y_min + h])
             labels.append(category_id + 1)
         
@@ -105,16 +102,15 @@ def print_final_report(training_time, best_val_loss, avg_inference_time, estimat
 
 
 # ==============================================================================
-# BLOQUE PRINCIPAL DE EJECUCIÓN (SOLUCIÓN A RUNTIME ERROR)
+# BLOQUE PRINCIPAL DE EJECUCIÓN
 # ==============================================================================
 if __name__ == '__main__':
     
-    # 1. Configurar 'spawn' para Multiprocessing con CUDA
     try:
         if mp.get_start_method(allow_none=True) != 'spawn':
             mp.set_start_method('spawn', force=True)
     except RuntimeError:
-        pass # Ya estaba configurado
+        pass 
 
     # 2. CONFIGURACIÓN
     NUM_CLASSES = 81 
@@ -128,13 +124,11 @@ if __name__ == '__main__':
     # --- 3. CARGA DE DATASETS ---
     print(f"Cargando dataset de ENTRENAMIENTO ('val' ~5K) y VALIDACIÓN ('train[:500]')...")
     
-    # Sin cache_dir para evitar conflictos de fsspec
     train_dataset = load_dataset("detection-datasets/coco", split="val")
     val_dataset = load_dataset("detection-datasets/coco", split="train[:500]")
 
     print(f"Dataset de Entrenamiento: {len(train_dataset)} ejemplos | Dataset de Validación (ES): {len(val_dataset)} ejemplos")
 
-    # Creamos los DataLoaders con num_workers > 0 (Ahora seguro gracias a if __name__ == '__main__')
     train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate_fn, num_workers=4)
     val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn, num_workers=4)
 
@@ -165,12 +159,10 @@ if __name__ == '__main__':
             losses.backward()
             optimizer.step()
 
-        # --- FASE DE VALIDACIÓN (CORREGIDO) ---
-        # CORRECCIÓN: Faster R-CNN debe estar en modo train() para devolver pérdidas.
+        # --- FASE DE VALIDACIÓN ---
         model.train() 
         val_loss_sum = 0
         
-        # Usamos no_grad() para que, aunque esté en train(), no actualice gradientes
         with torch.no_grad():
             for images, targets in tqdm(val_dataloader, desc=f"Epoch {epoch+1}/{EPOCHS} VALID"):
                 loss_dict = model(images, targets) 
@@ -192,16 +184,20 @@ if __name__ == '__main__':
     training_time = end_train - start_train
     
     # --- 5. PRUEBA DE INFERENCIA Y CÁLCULO DE mAP ---
-    # Cargamos el mejor modelo guardado
-    model.load_state_dict(torch.load(BEST_MODEL_PATH))
-    # Para inferencia real (mAP), sí usamos model.eval()
+    if os.path.exists(BEST_MODEL_PATH):
+        model.load_state_dict(torch.load(BEST_MODEL_PATH))
+    else:
+        print("⚠️ Advertencia: No se encontró el checkpoint, usando el modelo actual.")
+
     model.eval()
 
     print("\n--- INICIANDO PRUEBA DE INFERENCIA Y CÁLCULO DE mAP ---")
 
     inference_times = []
     MAX_TEST_BATCHES = 100 
-    metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox", num_classes=NUM_CLASSES - 1).to(DEVICE)
+    
+    # --- CORRECCIÓN AQUÍ: Eliminado 'num_classes' ---
+    metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox").to(DEVICE)
 
     if DEVICE.type == 'cuda':
         torch.cuda.reset_peak_memory_stats(DEVICE)
@@ -223,7 +219,6 @@ if __name__ == '__main__':
                 avg_time_per_image = batch_time / num_images
                 inference_times.append(avg_time_per_image)
                 
-                # Formato para TorchMetrics
                 preds = []
                 for pred in outputs:
                     preds.append({
@@ -241,12 +236,10 @@ if __name__ == '__main__':
 
                 metric.update(preds, target_metrics)
 
-    # Cálculo de Métricas Finales
     computed_metrics = metric.compute()
 
     avg_inference_time = sum(inference_times) / len(inference_times) if inference_times else 0.0
     estimated_fps = 1.0 / avg_inference_time if avg_inference_time > 0 else 0.0
     max_vram_allocated = (torch.cuda.max_memory_allocated(DEVICE) - max_vram_allocated_start) / (1024**3) if DEVICE.type == 'cuda' else 0.0
 
-    # Llamar a la función de reporte
     print_final_report(training_time, early_stopping.best_loss, avg_inference_time, estimated_fps, max_vram_allocated, total_epochs_run, computed_metrics)
